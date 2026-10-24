@@ -2,6 +2,7 @@ package home.tv.launcher
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.compose.ui.graphics.ImageBitmap
@@ -61,20 +62,11 @@ class TmdbClient(private val context: Context) {
 
     suspend fun trending(): List<ShelfItem> = withContext(Dispatchers.IO) {
         val key = key ?: return@withContext emptyList()
-        val request = Request.Builder()
-            .url("https://api.themoviedb.org/3/trending/all/week?language=ru-RU")
-            .apply {
-                // Поддерживаем и v3 api_key, и v4 read access token (длинный JWT)
-                if (key.length > 40) header("Authorization", "Bearer $key")
-                else url("https://api.themoviedb.org/3/trending/all/week?language=ru-RU&api_key=$key")
-            }
-            .build()
-        val body = client.newCall(request).execute().use { if (it.isSuccessful) it.body.string() else null }
-            ?: return@withContext emptyList()
-        val results = JSONObject(body).getJSONArray("results")
-        val raw = (0 until results.length()).map { results.getJSONObject(it) }
+        // Страница TMDB - 20 записей, часть из них люди или без кадра, поэтому берём две
+        val raw = (1..2).flatMap { page(key, it) }
             .filter { it.optString("media_type") in setOf("movie", "tv") && it.optString("backdrop_path").isNotEmpty() }
-            .take(10)
+            .distinctBy { it.getInt("id") }
+            .take(SHELF_SIZE)
         coroutineScope {
             raw.map { o ->
                 async {
@@ -93,15 +85,34 @@ class TmdbClient(private val context: Context) {
         }
     }
 
+    private fun page(key: String, page: Int): List<JSONObject> {
+        val base = "https://api.themoviedb.org/3/trending/all/week?language=ru-RU&page=$page"
+        val request = Request.Builder()
+            .apply {
+                // Поддерживаем и v3 api_key, и v4 read access token (длинный JWT)
+                if (key.length > 40) url(base).header("Authorization", "Bearer $key")
+                else url("$base&api_key=$key")
+            }
+            .build()
+        val body = client.newCall(request).execute().use { if (it.isSuccessful) it.body.string() else null }
+            ?: return emptyList()
+        val results = JSONObject(body).getJSONArray("results")
+        return (0 until results.length()).map { results.getJSONObject(it) }
+    }
+
     private fun backdrop(path: String): ImageBitmap? = runCatching {
         val request = Request.Builder().url("https://image.tmdb.org/t/p/w1280$path").build()
         client.newCall(request).execute().use { r ->
             if (!r.isSuccessful) return null
             val bytes = r.body.bytes()
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+            // RGB_565 вдвое легче ARGB: 20 кадров 1280x720 держим в памяти целиком
+            val options = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.RGB_565 }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)?.asImageBitmap()
         }
     }.getOrNull()
 }
+
+private const val SHELF_SIZE = 20
 
 fun openInNum(context: Context, item: ShelfItem) {
     val uri = Uri.parse("https://www.themoviedb.org/${item.type}/${item.id}")
