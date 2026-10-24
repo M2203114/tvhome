@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- sylvan.apple.com подписан Apple Root CA, которого нет в хранилище Android -->
+    <domain-config>
+        <domain includeSubdomains="true">sylvan.apple.com</domain>
+        <trust-anchors>
+            <certificates src="@raw/apple_root_ca" />
+            <certificates src="system" />
+        </trust-anchors>
+    </domain-config>
+</network-security-config>
