@@ -8,6 +8,7 @@
 ## Что внутри
 
 **Главный экран**
+- Верхняя полка как Top Shelf на tvOS: новинки недели из TMDB на русском, кадр на весь экран, название, год, рейтинг, описание. Листаются сами каждые 9 секунд. Вверх с ряда приложений - фокус на полке, стрелки листают, OK открывает фильм в [NUM](https://github.com/YouROK/NUM).
 - Плитки приложений 5:3 с баннерами Android TV. Плитка в фокусе увеличивается, получает тень и блик, под ней появляется подпись.
 - Фон - размытый баннер приложения в фокусе, меняется с плавным переходом.
 - Первый ряд - док, ниже остальные приложения. Новые приложения появляются сами.
@@ -41,6 +42,14 @@ adb shell settings put system screen_off_timeout 600000
 
 APK лежит в [Releases](../../releases).
 
+Для полки новинок нужен бесплатный ключ TMDB (themoviedb.org -> Settings -> API, подходит и "Ключ API", и "Read Access Token"). Ключ хранится только на приставке:
+
+```sh
+adb shell am start -n home.tv.launcher/.MainActivity --es tmdb_key <ключ>
+```
+
+Без ключа вместо полки фон из размытого баннера приложения в фокусе.
+
 Вернуть стоковый лаунчер (пакет посмотреть так: `adb shell cmd package query-activities --brief -a android.intent.action.MAIN -c android.intent.category.HOME`):
 
 ```sh
@@ -69,6 +78,8 @@ python3 tools/build_aerials.py entries.json ru.json > app/src/main/assets/aerial
 ```
 
 ## Нюансы
+
+- TMDB отдаёт российским DNS-резолверам 127.0.0.1. Лаунчер резолвит домены TMDB через DNS-over-HTTPS Cloudflare (`Shelf.kt`). Части IP картинок (Bunny CDN) напрямую из РФ может не быть, тогда нужен туннель на роутере.
 
 - Стоковые лаунчеры Ugoos (`com.uapplication.launcher`, `com.android.launcher3`) скрыты из списка, см. `HIDDEN` в `Apps.kt`. Для других приставок дописать свои.
 - `adb exec-out screencap` на Amlogic не снимает видеослой, заставка на скриншоте выглядит чёрной.

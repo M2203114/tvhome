@@ -29,7 +29,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -69,10 +71,14 @@ private val TILE_SHAPE = RoundedCornerShape(14.dp)
 @Composable
 fun HomeScreen(
     apps: List<AppEntry>,
+    shelf: List<ShelfItem>,
     homeSignal: Int,
     onLaunch: (AppEntry) -> Unit,
+    onOpenShelf: (ShelfItem) -> Unit,
     onReorder: (List<AppEntry>) -> Unit,
 ) {
+    var shelfIndex by remember { mutableIntStateOf(0) }
+    var shelfFocused by remember { mutableStateOf(false) }
     var focusedPkg by remember { mutableStateOf<String?>(null) }
     var movingPkg by remember { mutableStateOf<String?>(null) }
     val requesters = remember { mutableMapOf<String, FocusRequester>() }
@@ -106,6 +112,16 @@ fun HomeScreen(
     LaunchedEffect(homeSignal) { if (homeSignal > 0) goHome() }
 
     val focusedApp = apps.firstOrNull { it.pkg == focusedPkg }
+    val current = shelf.getOrNull(shelfIndex % shelf.size.coerceAtLeast(1))
+    val scrolled by remember { derivedStateOf { listState.firstVisibleItemIndex > 0 } }
+
+    // Как Top Shelf на tvOS: пока полка не в фокусе, новинки листаются сами
+    LaunchedEffect(shelfIndex, shelf.size, shelfFocused) {
+        if (shelf.size > 1 && !shelfFocused) {
+            delay(9_000)
+            shelfIndex = (shelfIndex + 1) % shelf.size
+        }
+    }
 
     Box(
         Modifier
@@ -131,14 +147,31 @@ fun HomeScreen(
                 }
             },
     ) {
-        Ambient(focusedApp?.banner ?: focusedApp?.icon)
+        if (current != null) Backdrop(current.backdrop, dimmed = scrolled)
+        else Ambient(focusedApp?.banner ?: focusedApp?.icon)
 
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = 120.dp),
         ) {
-            item(key = "shelf") { Box(Modifier.fillMaxWidth().height(SHELF)) }
+            item(key = "shelf") {
+                if (current != null) {
+                    ShelfInfo(
+                        item = current,
+                        index = shelfIndex % shelf.size,
+                        count = shelf.size,
+                        onFocused = {
+                            shelfFocused = it
+                            if (it) scope.launch { listState.animateScrollToItem(0) }
+                        },
+                        onStep = { shelfIndex = (shelfIndex + it + shelf.size) % shelf.size },
+                        onOpen = { onOpenShelf(current) },
+                    )
+                } else {
+                    Box(Modifier.fillMaxWidth().height(SHELF))
+                }
+            }
             itemsIndexed(apps.chunked(COLUMNS), key = { i, _ -> i }) { rowIndex, row ->
                 Row(
                     Modifier.padding(start = SIDE, end = SIDE, bottom = 28.dp),
@@ -171,6 +204,115 @@ fun HomeScreen(
                 Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp),
                 style = TextStyle(color = Color.White.copy(alpha = 0.6f), fontSize = 15.sp),
             )
+        }
+    }
+}
+
+/** Кадр из новинки на весь экран; при прокрутке к сетке приложений приглушается. */
+@Composable
+private fun Backdrop(image: ImageBitmap, dimmed: Boolean) {
+    val alpha by animateFloatAsState(if (dimmed) 0.3f else 1f, tween(500), label = "dim")
+    Crossfade(targetState = image, animationSpec = tween(900), label = "backdrop") { img ->
+        Image(
+            bitmap = img,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize().alpha(alpha),
+        )
+    }
+    Box(
+        Modifier.fillMaxSize().background(
+            Brush.horizontalGradient(0f to Color.Black.copy(alpha = 0.7f), 0.55f to Color.Transparent)
+        )
+    )
+    Box(
+        Modifier.fillMaxSize().background(
+            Brush.verticalGradient(
+                0f to Color.Black.copy(alpha = 0.25f),
+                0.3f to Color.Transparent,
+                0.5f to Color.Black.copy(alpha = 0.35f),
+                0.75f to Color.Black.copy(alpha = 0.9f),
+                1f to Color.Black,
+            )
+        )
+    )
+}
+
+@Composable
+private fun ShelfInfo(
+    item: ShelfItem,
+    index: Int,
+    count: Int,
+    onFocused: (Boolean) -> Unit,
+    onStep: (Int) -> Unit,
+    onOpen: () -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val buttonAlpha by animateFloatAsState(if (focused) 1f else 0f, tween(200), label = "button")
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(SHELF)
+            .onFocusChanged {
+                focused = it.isFocused
+                onFocused(it.isFocused)
+            }
+            .onPreviewKeyEvent { e ->
+                val k = e.nativeKeyEvent
+                when (k.keyCode) {
+                    KeyEvent.KEYCODE_DPAD_LEFT -> { if (k.action == KeyEvent.ACTION_DOWN) onStep(-1); true }
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> { if (k.action == KeyEvent.ACTION_DOWN) onStep(1); true }
+                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                        if (k.action == KeyEvent.ACTION_UP) onOpen()
+                        true
+                    }
+                    else -> false
+                }
+            }
+            .focusable(),
+    ) {
+        Column(Modifier.align(Alignment.BottomStart).padding(start = SIDE, bottom = 36.dp).width(620.dp)) {
+            val meta = listOfNotNull(
+                if (item.type == "tv") "СЕРИАЛ" else "ФИЛЬМ",
+                item.year.ifEmpty { null },
+                if (item.rating > 0) "TMDB %.1f".format(item.rating) else null,
+            ).joinToString(" · ")
+            BasicText(meta, style = TextStyle(color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.2.sp))
+            BasicText(
+                item.title,
+                Modifier.padding(top = 8.dp),
+                style = TextStyle(color = Color.White, fontSize = 40.sp, fontWeight = FontWeight.Bold),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            BasicText(
+                item.overview,
+                Modifier.padding(top = 10.dp),
+                style = TextStyle(color = Color.White.copy(alpha = 0.75f), fontSize = 15.sp, lineHeight = 21.sp),
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+            BasicText(
+                "Смотреть в NUM",
+                Modifier
+                    .padding(top = 18.dp)
+                    .alpha(buttonAlpha)
+                    .background(Color.White, RoundedCornerShape(50))
+                    .padding(horizontal = 18.dp, vertical = 8.dp),
+                style = TextStyle(color = Color.Black, fontSize = 15.sp, fontWeight = FontWeight.SemiBold),
+            )
+        }
+        Row(
+            Modifier.align(Alignment.BottomEnd).padding(end = SIDE, bottom = 48.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            repeat(count) { i ->
+                Box(
+                    Modifier
+                        .size(if (i == index) 18.dp else 6.dp, 6.dp)
+                        .background(Color.White.copy(alpha = if (i == index) 0.9f else 0.35f), RoundedCornerShape(3.dp))
+                )
+            }
         }
     }
 }
